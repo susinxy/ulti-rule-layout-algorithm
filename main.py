@@ -163,6 +163,16 @@ def main():
     # Solve
     pos, cost = solver.solve(120)
     
+    # Check if solver found a valid solution
+    if pos is None:
+        print(f"Solver failed to find valid solution for {case_name}", file=sys.stderr)
+        # Generate empty result file for compatibility
+        result = {"box_position": []}
+        output_path = os.path.join(results_dir, 'output.json')
+        with open(output_path, 'w') as f:
+            json.dump(result, f, indent=2)
+        sys.exit(1)
+    
     # Format and output result
     result = {
         "box_position": [

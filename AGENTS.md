@@ -5,20 +5,23 @@ Multi-rule rectangle layout optimization (模拟电路布局). Given box sizes +
 
 ## Commands
 ```bash
-# Run solver (default case: case10-large)
-python3 main.py
+# Run single case
+python3 main.py case09-all-constraints
 
-# Run solver with specific case
-python3 main.py case01-sym-x
+# Validate single output
+python3 validate.py cases/{case}/input.json results/{case}/output.json
 
 # Run all cases (batch)
 python3 run_all.py
 
-# Run batch with filter
-python3 run_all.py case01
+# Run all cases in parallel (e.g., 4 jobs)
+python3 run_all.py -j 4
 
-# Validate single output
-python3 validate.py cases/{case}/input.json results/{case}/output.json
+# Run all cases using all CPU cores
+python3 run_all.py -j 0
+
+# Run filtered cases with parallel execution
+python3 run_all.py -j 4 case0
 ```
 
 ## Test Cases
@@ -85,3 +88,5 @@ Validate with `validate.py` checks:
 - Symmetry axis for all pairs/self-symmetric
 - Alignment groups (left/right/top/bottom)  
 - Repeat group offset consistency (dx/dy spread < 0.01)
+
+Use `run_all.py` to execute all test cases. Supports parallel execution with `-j N` flag (N jobs, or 0 for auto/CPU count). Results saved to `results/summary.json`.

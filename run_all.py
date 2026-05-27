@@ -4,6 +4,9 @@ import os
 import subprocess
 import sys
 import time
+import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 
 
 CASES_DIR = "cases"
@@ -30,10 +33,11 @@ def run_case(case_name):
     result_dir = os.path.join(RESULTS_DIR, case_name)
     os.makedirs(result_dir, exist_ok=True)
     output_path = os.path.join(result_dir, "output.json")
+    temp_path = output_path + ".tmp"
 
     start = time.time()
     try:
-        with open(output_path, "w") as fout:
+        with open(temp_path, "w") as fout:
             proc = subprocess.run(
                 ["python3", "main.py", case_name],
                 stdout=fout,
@@ -43,12 +47,33 @@ def run_case(case_name):
         elapsed = time.time() - start
         stderr = proc.stderr.decode("utf-8", errors="replace")
     except subprocess.TimeoutExpired:
+        # Clean up temp file on timeout
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
         return {"case": case_name, "status": "TIMEOUT", "elapsed": SOLVER_TIMEOUT}
     except Exception as e:
+        # Clean up temp file on error
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
         return {"case": case_name, "status": "ERROR", "error": str(e)}
 
     if proc.returncode != 0:
+        # Clean up temp file on non-zero exit
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
         return {"case": case_name, "status": "FAIL", "stderr": stderr}
+
+    # Validate temp output is valid JSON before moving
+    try:
+        with open(temp_path, "r") as f:
+            json.load(f)  # Parse to validate it's valid JSON
+        # Move temp to final location
+        os.replace(temp_path, output_path)
+    except (json.JSONDecodeError, IOError) as e:
+        # Clean up invalid temp file
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        return {"case": case_name, "status": "FAIL", "stderr": f"Invalid JSON output: {e}\n{stderr}"}
 
     try:
         cost_line = next(l for l in stderr.splitlines() if l.startswith("Cost:"))
@@ -92,28 +117,65 @@ def run_case(case_name):
 
 
 def main():
-    filter_pattern = sys.argv[1] if len(sys.argv) > 1 else None
+    parser = argparse.ArgumentParser(description="Run all test cases")
+    parser.add_argument("filter", nargs="?", help="Filter pattern for case names")
+    parser.add_argument("-j", "--jobs", type=int, default=1,
+                       help="Number of parallel jobs (default: 1, use 0 for auto/CPU count)")
+    args = parser.parse_args()
+    
+    filter_pattern = args.filter
+    jobs = args.jobs
+    if jobs == 0:
+        jobs = multiprocessing.cpu_count()
+    
     cases = discover_cases(filter_pattern)
     if not cases:
         print("No cases found")
         return
 
     print(f"Running {len(cases)} case(s): {', '.join(cases)}")
+    if jobs > 1:
+        print(f"Using {jobs} parallel jobs")
     print("-" * 80)
+    
     results = []
-    for case in cases:
-        print(f"[{case}] running...", end=" ", flush=True)
-        r = run_case(case)
-        results.append(r)
-        cost = r.get("cost", "-")
-        valid = "OK" if r.get("valid") else "FAIL"
-        elapsed = r.get("elapsed", "-")
-        print(f"Cost={cost}, Valid={valid}, Time={elapsed}s")
-
+    start_time = time.time()
+    
+    if jobs == 1:
+        # Sequential execution
+        for case in cases:
+            print(f"[{case}] running...", end=" ", flush=True)
+            r = run_case(case)
+            results.append(r)
+            cost = r.get("cost", "-")
+            valid = "OK" if r.get("valid") else "FAIL"
+            elapsed = r.get("elapsed", "-")
+            print(f"Cost={cost}, Valid={valid}, Time={elapsed}s")
+    else:
+        # Parallel execution
+        with ProcessPoolExecutor(max_workers=jobs) as executor:
+            future_to_case = {executor.submit(run_case, case): case for case in cases}
+            for future in as_completed(future_to_case):
+                case = future_to_case[future]
+                try:
+                    r = future.result()
+                    results.append(r)
+                    cost = r.get("cost", "-")
+                    valid = "OK" if r.get("valid") else "FAIL"
+                    elapsed = r.get("elapsed", "-")
+                    print(f"[{case}] Cost={cost}, Valid={valid}, Time={elapsed}s", flush=True)
+                except Exception as e:
+                    print(f"[{case}] ERROR: {e}", flush=True)
+                    results.append({"case": case, "status": "ERROR", "error": str(e)})
+    
+    total_time = time.time() - start_time
     print("-" * 80)
     ok = sum(1 for r in results if r.get("valid"))
-    print(f"Summary: {ok}/{len(results)} cases valid")
+    print(f"Summary: {ok}/{len(results)} cases valid in {total_time:.1f}s")
 
+    # Sort results by case name for consistent output
+    results.sort(key=lambda x: x["case"])
+    
     with open("results/summary.json", "w") as f:
         json.dump(results, f, indent=2)
     print("Detailed results saved to results/summary.json")
