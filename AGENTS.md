@@ -5,11 +5,17 @@ Multi-rule rectangle layout optimization (模拟电路布局). Given box sizes +
 
 ## Commands
 ```bash
-# Run solver
-python3 solver.py sample_input.json > output.json
+# Run solver (default case: sample)
+python3 main.py
 
-# Validate output (check all constraints + cost)
-python3 validate.py sample_input.json output.json
+# Run solver with specific case
+python3 main.py mycase
+
+# Run solver with custom directory
+python3 main.py /path/to/case/directory
+
+# Validate output
+python3 validate.py cases/{case}/input.json results/{case}/output.json
 ```
 
 ## Architecture
