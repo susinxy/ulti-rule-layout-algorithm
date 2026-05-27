@@ -5,11 +5,32 @@ Multi-rule rectangle layout optimization (模拟电路布局). Given box sizes +
 
 ## Commands
 ```bash
-# Run solver
-python3 main.py sample_input.json > output.json
+# Run solver (default case: sample)
+python3 main.py
 
-# Validate output (check all constraints + cost)
-python3 validate.py sample_input.json output.json
+# Run solver with specific case
+python3 main.py mycase
+
+# Run solver with custom directory
+python3 main.py /path/to/case/directory
+
+# Validate output
+python3 validate.py cases/{case}/input.json results/{case}/output.json
+```
+
+## Directory Structure
+```
+cases/
+  {case_name}/
+    input.json          # 必需：输入数据
+    expected.json       # 可选：期望输出（用于对比绘图）
+
+results/
+  {case_name}/
+    input_boxes.png     # 输入框可视化
+    expected_layout.png # 期望输出可视化（如果有 expected.json）
+    output_layout.png   # 求解器输出可视化
+    output.json         # 求解结果
 ```
 
 ## Architecture

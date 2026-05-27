@@ -10,7 +10,7 @@ def load(path):
         return json.load(f)
 
 
-def plot_input(solver, filename="input_boxes.png"):
+def plot_input(solver, filename):
     """Visualize input box sizes in a grid layout."""
     try:
         import matplotlib.pyplot as plt
@@ -50,7 +50,7 @@ def plot_input(solver, filename="input_boxes.png"):
     print(f"Input plot saved: {filename}", file=sys.stderr)
 
 
-def plot_output(solver, pos, filename="output_layout.png"):
+def plot_output(solver, pos, filename):
     """Visualize layout with symmetry axes and nets."""
     try:
         import matplotlib.pyplot as plt
@@ -112,24 +112,58 @@ def plot_output(solver, pos, filename="output_layout.png"):
 
 
 def main():
-    inp_path = sys.argv[1] if len(sys.argv) > 1 else "sample_input.json"
-    data = load(inp_path)
+    # Parse argument: case name, directory path, or JSON file path
+    arg = sys.argv[1] if len(sys.argv) > 1 else "sample"
+    
+    # Determine input path and case name
+    if arg.endswith('.json') and os.path.isfile(arg):
+        # Direct JSON file
+        input_path = arg
+        case_name = os.path.splitext(os.path.basename(arg))[0]
+    elif os.path.isdir(arg):
+        # Directory containing input.json
+        case_dir = arg.rstrip('/')
+        input_path = os.path.join(case_dir, 'input.json')
+        case_name = os.path.basename(case_dir)
+        if not os.path.exists(input_path):
+            print(f"Error: {input_path} not found", file=sys.stderr)
+            sys.exit(1)
+    else:
+        # Case name (look in cases/ directory)
+        case_name = arg
+        input_path = os.path.join('cases', case_name, 'input.json')
+        if not os.path.exists(input_path):
+            print(f"Error: {input_path} not found", file=sys.stderr)
+            sys.exit(1)
+    
+    # Create results directory
+    results_dir = os.path.join('results', case_name)
+    os.makedirs(results_dir, exist_ok=True)
+    
+    # Load input data
+    data = load(input_path)
     solver = Solver(data)
-
-    plot_input(solver, "input_boxes.png")
-
-    sample_output_path = "sample_output.json"
-    if os.path.exists(sample_output_path):
+    
+    # Plot input
+    input_plot_path = os.path.join(results_dir, 'input_boxes.png')
+    plot_input(solver, input_plot_path)
+    
+    # Check for expected output and plot if exists
+    expected_path = os.path.join('cases', case_name, 'expected.json')
+    if os.path.exists(expected_path):
         try:
-            sample_data = load(sample_output_path)
-            sample_pos = {i + 1: tuple(p) for i, p in enumerate(sample_data["box_position"])}
-            plot_output(solver, sample_pos, "sample_output_layout.png")
-            print(f"Sample output plot saved: sample_output_layout.png", file=sys.stderr)
+            expected_data = load(expected_path)
+            expected_pos = {i + 1: tuple(p) for i, p in enumerate(expected_data["box_position"])}
+            expected_plot_path = os.path.join(results_dir, 'expected_layout.png')
+            plot_output(solver, expected_pos, expected_plot_path)
+            print(f"Expected layout plot saved: {expected_plot_path}", file=sys.stderr)
         except Exception as e:
-            print(f"Failed to plot sample output: {e}", file=sys.stderr)
-
+            print(f"Failed to plot expected output: {e}", file=sys.stderr)
+    
+    # Solve
     pos, cost = solver.solve(120)
-
+    
+    # Format and output result
     result = {
         "box_position": [
             [round(pos[i][0], 4), round(pos[i][1], 4)]
@@ -137,15 +171,23 @@ def main():
         ]
     }
     print(json.dumps(result, indent=2))
-
+    
+    # Save result to file
+    output_path = os.path.join(results_dir, 'output.json')
+    with open(output_path, 'w') as f:
+        json.dump(result, f, indent=2)
+    
+    # Print statistics
     final_cost, hpwl, area = solver.compute_cost(pos)
     overlap = solver.compute_overlap(pos)
     print(
         f"Cost: {final_cost:.2f} HPWL: {hpwl:.2f} Area: {area:.2f} Ovl: {overlap:.6f}",
         file=sys.stderr,
     )
-
-    plot_output(solver, pos, "output_layout.png")
+    
+    # Plot output
+    output_plot_path = os.path.join(results_dir, 'output_layout.png')
+    plot_output(solver, pos, output_plot_path)
 
 
 if __name__ == "__main__":
