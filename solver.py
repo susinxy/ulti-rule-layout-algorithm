@@ -30,6 +30,7 @@ class Solver:
 
         self.repeat_groups = [rg["groups"] for rg in data.get("repeat_groups", [])]
 
+        # dependent boxes: derived from symmetry / repeat-group (not optimized directly)
         self.dependent = set()
         for a, b in self.sym_pairs_x: self.dependent.add(b)
         for a, b in self.sym_pairs_y: self.dependent.add(b)
@@ -39,17 +40,16 @@ class Solver:
 
         self.indep = [b[0] for b in self.boxes if b[0] not in self.dependent]
 
-        # Net connectivity weight
+        # net connectivity weight (used for net-aware initial ordering)
         self.net_neighbors = defaultdict(lambda: defaultdict(int))
         for net in self.nets:
             for i in net:
                 for j in net:
                     if i != j: self.net_neighbors[i][j] += 1
 
-        # Map boxes to constraints
-        self.sym_pair_master = {}
-        for a, b in self.sym_pairs_x: self.sym_pair_master[b] = a
-        for a, b in self.sym_pairs_y: self.sym_pair_master[b] = a
+        # master-of maps (informational, not currently used to derive slaves)
+        self.sym_pair_master = {b: a for a, b in self.sym_pairs_x}
+        self.sym_pair_master.update({b: a for a, b in self.sym_pairs_y})
 
         self.rg_master_of = {}
         for rg in self.repeat_groups:
@@ -58,9 +58,10 @@ class Solver:
                 for a, b in zip(master, slave):
                     self.rg_master_of[b] = (master, slave)
 
-        # Analyze forced offsets from alignment constraints
-        # If master and slave in same group are aligned and have same size, offset is forced
-        self.forced_offsets = {}  # key -> (dx, dy) with None for free dimensions
+        # Forced offsets: if master and slave in same repeat group share an alignment
+        # constraint and have the same size, the offset is forced (e.g. dx=0 for
+        # right-align with equal widths).
+        self.forced_offsets = {}
         for rg in self.repeat_groups:
             master = rg[0]
             for gi, slave in enumerate(rg[1:]):
@@ -68,37 +69,24 @@ class Solver:
                 forced_dx = None
                 forced_dy = None
 
-                # Check right alignment
                 for grp in self.align_right:
                     for ma, sl in zip(master, slave):
-                        if ma in grp and sl in grp:
-                            # ma and sl must have same right edge
-                            # x_ma + w_ma = x_sl + w_sl = (x_ma + dx) + w_sl
-                            # If w_ma = w_sl, then dx = 0
-                            if abs(self.w[ma] - self.w[sl]) < EPS:
-                                forced_dx = 0.0
+                        if ma in grp and sl in grp and abs(self.w[ma] - self.w[sl]) < EPS:
+                            forced_dx = 0.0
 
-                # Check left alignment
                 for grp in self.align_left:
                     for ma, sl in zip(master, slave):
                         if ma in grp and sl in grp:
-                            # x_ma = x_sl = x_ma + dx => dx = 0
                             forced_dx = 0.0
 
-                # Check top alignment
                 for grp in self.align_top:
                     for ma, sl in zip(master, slave):
-                        if ma in grp and sl in grp:
-                            # y_ma + h_ma = y_sl + h_sl = (y_ma + dy) + h_sl
-                            # If h_ma = h_sl, then dy = 0
-                            if abs(self.h[ma] - self.h[sl]) < EPS:
-                                forced_dy = 0.0
+                        if ma in grp and sl in grp and abs(self.h[ma] - self.h[sl]) < EPS:
+                            forced_dy = 0.0
 
-                # Check bottom alignment
                 for grp in self.align_bottom:
                     for ma, sl in zip(master, slave):
                         if ma in grp and sl in grp:
-                            # y_ma = y_sl => dy = 0
                             forced_dy = 0.0
 
                 if forced_dx is not None or forced_dy is not None:
@@ -107,16 +95,9 @@ class Solver:
     def decode_seq_pair(self, alpha, beta):
         """Decode sequence pair (alpha, beta) to positions using longest path."""
         n = len(alpha)
-        alpha_pos = {x: i for i, x in enumerate(alpha)}
         beta_pos = {x: i for i, x in enumerate(beta)}
 
-        # X: i before j in alpha AND i before j in beta => x[j] >= x[i] + w[i]
-        # Y: i before j in alpha AND j before i in beta => y[j] >= y[i] + h[i]
-        x = {}
-        for item in alpha:
-            x[item] = 0.0
-
-        # Topological pass for X
+        x = {item: 0.0 for item in alpha}
         for i in range(n):
             ai = alpha[i]
             for j in range(i + 1, n):
@@ -126,10 +107,7 @@ class Solver:
                     if val > x[aj]:
                         x[aj] = val
 
-        y = {}
-        for item in alpha:
-            y[item] = 0.0
-
+        y = {item: 0.0 for item in alpha}
         for i in range(n):
             ai = alpha[i]
             for j in range(i + 1, n):
@@ -143,15 +121,14 @@ class Solver:
 
     def apply_constraints(self, pos, axis_x, axis_y, rg_offsets):
         """Apply hard constraints with correct ordering to avoid conflicts."""
-        
-        # Build set of all slave boxes (should not be modified by alignment)
+
         slave_boxes = set()
         for rg in self.repeat_groups:
             for slave in rg[1:]:
                 slave_boxes.update(slave)
-        
-        for iteration in range(10):
-            # PHASE 1: Symmetry on masters and self-symmetric boxes
+
+        for _iteration in range(10):
+            # PHASE 1: symmetry on masters / self-symmetric (non-slave) boxes
             for a, b in self.sym_pairs_x:
                 if a in pos and b not in slave_boxes:
                     xca = pos[a][0] + self.w[a] / 2.0
@@ -173,41 +150,37 @@ class Solver:
                     if s in pos and s not in slave_boxes:
                         pos[s] = (pos[s][0], axis_y - self.h[s] / 2.0)
 
-            # PHASE 2: Alignment on non-slave boxes only
+            # PHASE 2: alignment on non-slave boxes only
             for grp in self.align_left:
                 non_slave = [i for i in grp if i in pos and i not in slave_boxes]
                 if non_slave:
-                    vals = [pos[i][0] for i in non_slave]
-                    t = min(vals)
+                    t = min(pos[i][0] for i in non_slave)
                     for i in grp:
                         if i in pos and i not in slave_boxes:
                             pos[i] = (t, pos[i][1])
             for grp in self.align_right:
                 non_slave = [i for i in grp if i in pos and i not in slave_boxes]
                 if non_slave:
-                    vals = [pos[i][0] + self.w[i] for i in non_slave]
-                    t = max(vals)
+                    t = max(pos[i][0] + self.w[i] for i in non_slave)
                     for i in grp:
                         if i in pos and i not in slave_boxes:
                             pos[i] = (t - self.w[i], pos[i][1])
             for grp in self.align_top:
                 non_slave = [i for i in grp if i in pos and i not in slave_boxes]
                 if non_slave:
-                    vals = [pos[i][1] + self.h[i] for i in non_slave]
-                    t = max(vals)
+                    t = max(pos[i][1] + self.h[i] for i in non_slave)
                     for i in grp:
                         if i in pos and i not in slave_boxes:
                             pos[i] = (pos[i][0], t - self.h[i])
             for grp in self.align_bottom:
                 non_slave = [i for i in grp if i in pos and i not in slave_boxes]
                 if non_slave:
-                    vals = [pos[i][1] for i in non_slave]
-                    t = min(vals)
+                    t = min(pos[i][1] for i in non_slave)
                     for i in grp:
                         if i in pos and i not in slave_boxes:
                             pos[i] = (pos[i][0], t)
 
-            # PHASE 3: Repeat groups (derive ALL slaves from masters)
+            # PHASE 3: repeat groups derive ALL slaves from masters
             for rg in self.repeat_groups:
                 master = rg[0]
                 for gi, slave in enumerate(rg[1:]):
@@ -226,7 +199,6 @@ class Solver:
                             dy = forced[1] if forced[1] is not None else 50.0
                             rg_offsets[key] = (dx, dy)
 
-                    # Apply forced offsets
                     dx, dy = rg_offsets[key]
                     if forced[0] is not None: dx = forced[0]
                     if forced[1] is not None: dy = forced[1]
@@ -236,7 +208,7 @@ class Solver:
                         if ma in pos:
                             pos[sl] = (pos[ma][0] + dx, pos[ma][1] + dy)
 
-            # PHASE 4: Apply symmetry to slave boxes that also have symmetry constraints
+            # PHASE 4: symmetry on slave boxes
             for a, b in self.sym_pairs_x:
                 if a in pos and b in slave_boxes:
                     xca = pos[a][0] + self.w[a] / 2.0
@@ -271,7 +243,7 @@ class Solver:
         return total
 
     def net_aware_order(self):
-        """BFS order by net connectivity for good initial alpha"""
+        """BFS order by net connectivity for good initial alpha."""
         neighbors = self.net_neighbors
         start = max(self.indep, key=lambda x: sum(neighbors[x].values()))
         visited = set()
@@ -291,21 +263,29 @@ class Solver:
         return order
 
     def solve(self, time_limit=120):
+        """Run single long-running SA. Returns (positions_dict, best_cost)."""
         start = time.time()
         ids = list(range(1, self.n + 1))
         n_ids = len(ids)
+        all_w = sum(self.w[b] for b in ids)
+        all_h = sum(self.h[b] for b in ids)
+        has_sym_y = bool(self.sym_pairs_y or self.sym_self_y)
+
+        best_pos = None
+        best_cost = float('inf')
+        best_alpha = None
+        best_beta = None
+        best_axis_x = None
+        best_axis_y = None
+        best_rg_offsets = None
 
         indep_order = self.net_aware_order()
         alpha = list(indep_order) + [b for b in ids if b not in indep_order]
         beta = list(alpha)
         random.shuffle(beta)
-
-        pos = self.decode_seq_pair(alpha, beta)
-
-        all_w = sum(self.w[b] for b in ids)
         axis_x = all_w / 2.0 * 0.6
-        axis_y = None
-
+        axis_y = all_h / 2.0 * 0.6 if has_sym_y else None
+        
         rg_offsets = {}
         for rg in self.repeat_groups:
             master = rg[0]
@@ -317,98 +297,94 @@ class Solver:
                 dy = forced[1] if forced[1] is not None else 0.0
                 rg_offsets[key] = (dx, dy)
 
+        pos = self.decode_seq_pair(alpha, beta)
         self.apply_constraints(pos, axis_x, axis_y, rg_offsets)
 
         cost, hpwl, area = self.compute_cost(pos)
         overlap = self.compute_overlap(pos)
         score = cost + overlap * 5000
 
-        best_pos = dict(pos)
-        best_cost = cost if overlap < EPS else float('inf')
-        best_alpha = list(alpha)
-        best_beta = list(beta)
-        best_axis_x = axis_x
-        best_rg_offsets = dict(rg_offsets)
-
         T = 2000.0
-        cooling = 0.99997
         moves = 0
 
-        while time.time() - start < time_limit:
-            new_alpha = list(alpha)
-            new_beta = list(beta)
-            new_axis_x = axis_x
-            new_axis_y = axis_y
-            new_rg_offsets = dict(rg_offsets)
+        while time.time() - start < time_limit - 1:
+                new_alpha = list(alpha)
+                new_beta = list(beta)
+                new_axis_x = axis_x
+                new_axis_y = axis_y
+                new_rg_offsets = dict(rg_offsets)
 
-            r = random.random()
-
-            if r < 0.25:
-                i, j = random.sample(range(n_ids), 2)
-                new_alpha[i], new_alpha[j] = new_alpha[j], new_alpha[i]
-            elif r < 0.50:
-                i, j = random.sample(range(n_ids), 2)
-                new_beta[i], new_beta[j] = new_beta[j], new_beta[i]
-            elif r < 0.60:
-                if len(self.indep) >= 2:
-                    a_pos = random.sample(range(n_ids), 2)
-                    new_alpha[a_pos[0]], new_alpha[a_pos[1]] = new_alpha[a_pos[1]], new_alpha[a_pos[0]]
-            elif r < 0.70:
-                step = max(10.0, T / 100.0)
-                new_axis_x += random.gauss(0, step)
-            elif r < 0.80:
-                i, j = sorted(random.sample(range(n_ids), 2))
-                if random.random() < 0.5:
-                    new_alpha[i:j+1] = reversed(new_alpha[i:j+1])
-                else:
-                    new_beta[i:j+1] = reversed(new_beta[i:j+1])
-            elif r < 0.90:
-                i = random.randint(0, n_ids - 1)
-                j = random.randint(0, n_ids - 1)
-                val = new_alpha.pop(i)
-                new_alpha.insert(j, val)
-            else:
-                step = max(15.0, T / 50.0)
-                for key in list(new_rg_offsets.keys()):
+                r = random.random()
+                if r < 0.25:
+                    i, j = random.sample(range(n_ids), 2)
+                    new_alpha[i], new_alpha[j] = new_alpha[j], new_alpha[i]
+                elif r < 0.50:
+                    i, j = random.sample(range(n_ids), 2)
+                    new_beta[i], new_beta[j] = new_beta[j], new_beta[i]
+                elif r < 0.60:
+                    if len(self.indep) >= 2:
+                        a_pos = random.sample(range(n_ids), 2)
+                        new_alpha[a_pos[0]], new_alpha[a_pos[1]] = new_alpha[a_pos[1]], new_alpha[a_pos[0]]
+                elif r < 0.70:
+                    step = max(5.0, T / 100.0)
+                    if has_sym_y and random.random() < 0.5:
+                        new_axis_y = (new_axis_y or 0.0) + random.gauss(0, step)
+                    else:
+                        new_axis_x += random.gauss(0, step)
+                elif r < 0.80:
+                    i, j = sorted(random.sample(range(n_ids), 2))
                     if random.random() < 0.5:
-                        ox, oy = new_rg_offsets[key]
-                        forced = self.forced_offsets.get(key, (None, None))
-                        new_ox = forced[0] if forced[0] is not None else ox + random.gauss(0, step)
-                        new_oy = forced[1] if forced[1] is not None else oy + random.gauss(0, step)
-                        new_rg_offsets[key] = (new_ox, new_oy)
+                        new_alpha[i:j+1] = reversed(new_alpha[i:j+1])
+                    else:
+                        new_beta[i:j+1] = reversed(new_beta[i:j+1])
+                elif r < 0.90:
+                    i = random.randint(0, n_ids - 1)
+                    j = random.randint(0, n_ids - 1)
+                    val = new_alpha.pop(i)
+                    new_alpha.insert(j, val)
+                else:
+                    step = max(10.0, T / 50.0)
+                    for key in list(new_rg_offsets.keys()):
+                        if random.random() < 0.5:
+                            ox, oy = new_rg_offsets[key]
+                            forced = self.forced_offsets.get(key, (None, None))
+                            new_ox = forced[0] if forced[0] is not None else ox + random.gauss(0, step)
+                            new_oy = forced[1] if forced[1] is not None else oy + random.gauss(0, step)
+                            new_rg_offsets[key] = (new_ox, new_oy)
 
-            new_pos = self.decode_seq_pair(new_alpha, new_beta)
-            self.apply_constraints(new_pos, new_axis_x, new_axis_y, new_rg_offsets)
+                new_pos = self.decode_seq_pair(new_alpha, new_beta)
+                self.apply_constraints(new_pos, new_axis_x, new_axis_y, new_rg_offsets)
 
-            new_cost, _, _ = self.compute_cost(new_pos)
-            new_overlap = self.compute_overlap(new_pos)
-            new_score = new_cost + new_overlap * 5000
+                new_cost, _, _ = self.compute_cost(new_pos)
+                new_overlap = self.compute_overlap(new_pos)
+                new_score = new_cost + new_overlap * 5000
 
-            delta = new_score - score
-            if delta < 0 or random.random() < math.exp(-delta / max(T, 0.1)):
-                alpha = new_alpha
-                beta = new_beta
-                axis_x = new_axis_x
-                axis_y = new_axis_y
-                rg_offsets = new_rg_offsets
-                pos = new_pos
-                cost = new_cost
-                overlap = new_overlap
-                score = new_score
+                delta = new_score - score
+                if delta < 0 or random.random() < math.exp(-delta / max(T, 0.1)):
+                    alpha = new_alpha
+                    beta = new_beta
+                    axis_x = new_axis_x
+                    axis_y = new_axis_y
+                    rg_offsets = new_rg_offsets
+                    pos = new_pos
+                    cost = new_cost
+                    overlap = new_overlap
+                    score = new_score
 
-                if overlap < EPS and cost < best_cost:
-                    best_cost = cost
-                    best_pos = dict(pos)
-                    best_alpha = list(alpha)
-                    best_beta = list(beta)
-                    best_axis_x = axis_x
-                    best_rg_offsets = dict(rg_offsets)
+                    if overlap < EPS and cost < best_cost:
+                        best_cost = cost
+                        best_pos = dict(pos)
+                        best_alpha = list(alpha)
+                        best_beta = list(beta)
+                        best_axis_x = axis_x
+                        best_axis_y = axis_y if has_sym_y else None
+                        best_rg_offsets = dict(rg_offsets)
 
-            moves += 1
-            T = max(T * cooling, 0.1)
+                moves += 1
+                T = max(T * 0.99997, 0.1)
 
-            if moves % 10000 == 0:
-                elapsed = time.time() - start
-                print(f"It {moves} T={T:.2f} Best={best_cost:.0f} Cur={cost:.0f} Ovl={overlap:.1f} {elapsed:.0f}s", file=sys.stderr)
+                if moves % 10000 == 0:
+                    elapsed = time.time() - start
+                    print(f"It {moves} T={T:.2f} Best={best_cost:.0f} Cur={cost:.0f} Ovl={overlap:.1f} {elapsed:.0f}s", file=sys.stderr)
 
         return best_pos, best_cost

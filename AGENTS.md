@@ -5,17 +5,49 @@ Multi-rule rectangle layout optimization (模拟电路布局). Given box sizes +
 
 ## Commands
 ```bash
-# Run solver (default case: sample)
+# Run solver (default case: case10-large)
 python3 main.py
 
 # Run solver with specific case
-python3 main.py mycase
+python3 main.py case01-sym-x
 
-# Run solver with custom directory
-python3 main.py /path/to/case/directory
+# Run all cases (batch)
+python3 run_all.py
 
-# Validate output
+# Run batch with filter
+python3 run_all.py case01
+
+# Validate single output
 python3 validate.py cases/{case}/input.json results/{case}/output.json
+```
+
+## Test Cases
+| Case | Constraint Types | Boxes | Notes |
+|------|------------------|-------|-------|
+| case01-sym-x | X symmetry | 6 | Pure X-axis symmetry |
+| case02-sym-y | Y symmetry | 6 | Pure Y-axis symmetry |
+| case03-sym-xy | X + Y symmetry | 8 | Independent symmetry groups |
+| case04-align | Alignment | 8 | All four alignment types |
+| case05-repeat | Repeat groups | 12 | Two repeat groups |
+| case06-sym-x-align | X symmetry + alignment | 6 | Constraint interaction |
+| case07-sym-x-repeat | X symmetry + repeat | 7 | Symmetry + repeat interaction |
+| case08-align-repeat | Alignment + repeat | 6 | Alignment + repeat interaction |
+| case09-all-constraints | All constraint types | 12 | Full constraint suite |
+| case10-large | X symmetry + repeat + align | 32 | Large-scale test |
+
+## Directory Structure
+```
+cases/
+  {case_name}/
+    input.json          # 必需：输入数据
+    expected.json       # 可选：期望输出（用于对比绘图）
+
+results/
+  {case_name}/
+    input_boxes.png     # 输入框可视化
+    expected_layout.png # 期望输出可视化（如果有 expected.json）
+    output_layout.png   # 求解器输出可视化
+    output.json         # 求解结果
 ```
 
 ## Architecture
@@ -25,9 +57,11 @@ python3 validate.py cases/{case}/input.json results/{case}/output.json
 - SA moves: swap, reverse-segment, move-element, axis-adjust, rg-offset-adjust
 - Constraint repair after every decode
 
-**Branch strategy** (`long-run`): Single continuous SA run for the entire 120s budget.
-- Pro: full cooling schedule, no wasted iterations on re-heating
-- Con: can get stuck in local optima, result depends heavily on random seed
+**Branch strategy** (`adaptive-restart`): Warm restart SA with adaptive stale detection.
+- First run uses full budget; if no improvement for 15s and ≥25s remain, triggers warm restart
+- Warm restart perturbs 5-15% of sequence pair positions, uses lower T0 (300-600)
+- Pro: escapes local optima, reduces variance across runs
+- Con: restart overhead if stale detection is poorly tuned
 
 **Key design**: only independently optimize "independent" boxes (not slaves). Dependent boxes derived from:
 - Symmetry pairs: slave = mirror(master) around axis

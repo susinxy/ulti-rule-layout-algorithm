@@ -129,7 +129,8 @@ def validate(inp, out):
     print(f"HPWL: {hpwl:.4f}")
     print(f"Cost (10*HPWL+Area): {cost:.4f}")
     print(f"Bounding box: x=[{min_x:.4f}, {max_x:.4f}], y=[{min_y:.4f}, {max_y:.4f}]")
-    print(f"Symmetry axis x: {axis_x_val:.4f}")
+    if axis_x_val is not None:
+        print(f"Symmetry axis x: {axis_x_val:.4f}")
     if axis_y_val is not None:
         print(f"Symmetry axis y: {axis_y_val:.4f}")
     print(f"Overlaps: {len(overlaps)} {overlaps[:5]}")
