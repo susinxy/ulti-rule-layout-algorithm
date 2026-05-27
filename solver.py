@@ -268,12 +268,15 @@ class Solver:
         ids = list(range(1, self.n + 1))
         n_ids = len(ids)
         all_w = sum(self.w[b] for b in ids)
+        all_h = sum(self.h[b] for b in ids)
+        has_sym_y = bool(self.sym_pairs_y or self.sym_self_y)
 
         global_best_pos = None
         global_best_cost = float('inf')
         global_best_alpha = None
         global_best_beta = None
         global_best_axis_x = None
+        global_best_axis_y = None
         global_best_rg_offsets = None
 
         stale_seconds = 15.0
@@ -321,8 +324,12 @@ class Solver:
                 T_start = random.uniform(300, 600)
                 cooling = 0.999998 if time.time() - start > 60 else 0.99999
 
-            axis_y = None
             pos = self.decode_seq_pair(alpha, beta)
+            axis_y = all_h / 2.0 * 0.6 if (has_sym_y and is_first_run) else axis_y
+            if not has_sym_y:
+                axis_y = None
+            elif not is_first_run:
+                axis_y = global_best_axis_y + random.gauss(0, 5.0) if global_best_axis_y is not None else all_h / 2.0 * 0.6
             self.apply_constraints(pos, axis_x, axis_y, rg_offsets)
 
             cost, hpwl, area = self.compute_cost(pos)
@@ -334,6 +341,7 @@ class Solver:
             local_best_alpha = list(alpha)
             local_best_beta = list(beta)
             local_best_axis_x = axis_x
+            local_best_axis_y = axis_y if has_sym_y else None
             local_best_rg_offsets = dict(rg_offsets)
 
             T = T_start
@@ -362,7 +370,10 @@ class Solver:
                         new_alpha[a_pos[0]], new_alpha[a_pos[1]] = new_alpha[a_pos[1]], new_alpha[a_pos[0]]
                 elif r < 0.70:
                     step = max(5.0, T / 100.0)
-                    new_axis_x += random.gauss(0, step)
+                    if has_sym_y and random.random() < 0.5:
+                        new_axis_y = (new_axis_y or 0.0) + random.gauss(0, step)
+                    else:
+                        new_axis_x += random.gauss(0, step)
                 elif r < 0.80:
                     i, j = sorted(random.sample(range(n_ids), 2))
                     if random.random() < 0.5:
@@ -409,6 +420,7 @@ class Solver:
                         local_best_alpha = list(alpha)
                         local_best_beta = list(beta)
                         local_best_axis_x = axis_x
+                        local_best_axis_y = axis_y if has_sym_y else None
                         local_best_rg_offsets = dict(rg_offsets)
                         chunk_last_improve = time.time()
 
@@ -425,6 +437,7 @@ class Solver:
                 global_best_alpha = list(local_best_alpha)
                 global_best_beta = list(local_best_beta)
                 global_best_axis_x = local_best_axis_x
+                global_best_axis_y = local_best_axis_y if has_sym_y else None
                 global_best_rg_offsets = dict(local_best_rg_offsets)
                 last_improve_time = time.time()
 

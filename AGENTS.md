@@ -5,18 +5,35 @@ Multi-rule rectangle layout optimization (模拟电路布局). Given box sizes +
 
 ## Commands
 ```bash
-# Run solver (default case: sample)
+# Run solver (default case: case10-large)
 python3 main.py
 
 # Run solver with specific case
-python3 main.py mycase
+python3 main.py case01-sym-x
 
-# Run solver with custom directory
-python3 main.py /path/to/case/directory
+# Run all cases (batch)
+python3 run_all.py
 
-# Validate output
+# Run batch with filter
+python3 run_all.py case01
+
+# Validate single output
 python3 validate.py cases/{case}/input.json results/{case}/output.json
 ```
+
+## Test Cases
+| Case | Constraint Types | Boxes | Notes |
+|------|------------------|-------|-------|
+| case01-sym-x | X symmetry | 6 | Pure X-axis symmetry |
+| case02-sym-y | Y symmetry | 6 | Pure Y-axis symmetry |
+| case03-sym-xy | X + Y symmetry | 8 | Independent symmetry groups |
+| case04-align | Alignment | 8 | All four alignment types |
+| case05-repeat | Repeat groups | 12 | Two repeat groups |
+| case06-sym-x-align | X symmetry + alignment | 6 | Constraint interaction |
+| case07-sym-x-repeat | X symmetry + repeat | 7 | Symmetry + repeat interaction |
+| case08-align-repeat | Alignment + repeat | 6 | Alignment + repeat interaction |
+| case09-all-constraints | All constraint types | 12 | Full constraint suite |
+| case10-large | X symmetry + repeat + align | 32 | Large-scale test |
 
 ## Directory Structure
 ```

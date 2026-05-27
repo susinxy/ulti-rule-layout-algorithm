@@ -113,7 +113,7 @@ def plot_output(solver, pos, filename):
 
 def main():
     # Parse argument: case name, directory path, or JSON file path
-    arg = sys.argv[1] if len(sys.argv) > 1 else "sample"
+    arg = sys.argv[1] if len(sys.argv) > 1 else "case10-large"
     
     # Determine input path and case name
     if arg.endswith('.json') and os.path.isfile(arg):
