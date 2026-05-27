@@ -19,6 +19,10 @@ python3 validate.py sample_input.json output.json
 - SA moves: swap, reverse-segment, move-element, axis-adjust, rg-offset-adjust
 - Constraint repair after every decode
 
+**Branch strategy** (`long-run`): Single continuous SA run for the entire 120s budget.
+- Pro: full cooling schedule, no wasted iterations on re-heating
+- Con: can get stuck in local optima, result depends heavily on random seed
+
 **Key design**: only independently optimize "independent" boxes (not slaves). Dependent boxes derived from:
 - Symmetry pairs: slave = mirror(master) around axis
 - Repeat groups: slave = master + offset  
