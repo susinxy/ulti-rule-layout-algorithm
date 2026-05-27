@@ -56,26 +56,22 @@ results/
 
 ## Architecture
 
-**solver.py** uses **Sequence Pair + Simulated Annealing**:
-- Sequence pair (alpha, beta permutations) encodes relative positioning → decoded via longest-path DAG → guarantees no overlap for independent boxes
-- SA moves: swap, reverse-segment, move-element, axis-adjust, rg-offset-adjust
-- Constraint repair after every decode
+**solver.py** uses **Constraint Reduction + Simulated Annealing**:
+- Linear constraint expressions: each box's (x, y) is a `LinearExpr` over independent variables
+- Constraints (symmetry, alignment, repeat) are parsed into linear equations that automatically satisfy hard constraints for any variable assignment
+- SA searches over the independent variable space (low-dimensional continuous)
+- Objective: `F = 10*HPWL + Area + λ*Overlap`, with λ growing as temperature falls
+- Post-processing: gradient-free descent to eliminate residual overlaps
 
-**Branch strategy** (`adaptive-restart`): Warm restart SA with adaptive stale detection.
-- First run uses full budget; if no improvement for 15s and ≥25s remain, triggers warm restart
-- Warm restart perturbs 5-15% of sequence pair positions, uses lower T0 (300-600)
-- Pro: escapes local optima, reduces variance across runs
-- Con: restart overhead if stale detection is poorly tuned
+**Key design**:
+- `LinearExpr`: linear combinations of variable values, supports arithmetic operations
+- `ConstraintReducer`: parses input constraints, builds linear expressions for each box coordinate
+- `Optimizer`: SA over variable values with adaptive step sizes per variable
 
-**Key design**: only independently optimize "independent" boxes (not slaves). Dependent boxes derived from:
-- Symmetry pairs: slave = mirror(master) around axis
-- Repeat groups: slave = master + offset  
-- Self-symmetric: center on axis
-
-**Constraint interaction gotcha**: when master and slave in same repeat group share an alignment constraint, the repeat group offset is forced (e.g., right-align with same width → dx=0). `Solver.forced_offsets` pre-computes these.
-
-## Constraint Application Order (critical)
-Must be iterative (5 passes): alignment (lowest priority) → repeat groups derive slaves → symmetry on ALL boxes (highest priority, enforces axis, overrides alignment drift) → repeat groups (slaves follow corrected masters) → final symmetry pass. Wrong order causes constraint violations that look correct but fail validation. Symmetry is the highest-priority hard constraint because axis position is part of the optimization state.
+**Branch strategy** (`constraint-reduction`): Constraint-reduction approach
+- Pro: hard constraints guaranteed by construction (no constraint repair needed)
+- Pro: searches low-dimensional space (fewer variables than boxes)
+- Con: complex overlapping constraints on same box can still cause violations (e.g., self-symmetry inside repeat group)
 
 ## Current Performance
 - Sample: Cost ~35k (reference)
