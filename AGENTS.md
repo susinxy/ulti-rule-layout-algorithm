@@ -24,6 +24,7 @@ python3 validate.py cases/{case}/input.json results/{case}/output.json
 ## Test Cases
 | Case | Constraint Types | Boxes | Notes |
 |------|------------------|-------|-------|
+| case00-sample | X symmetry + repeat + align | 32 | Reference sample (baseline) |
 | case01-sym-x | X symmetry | 6 | Pure X-axis symmetry |
 | case02-sym-y | Y symmetry | 6 | Pure Y-axis symmetry |
 | case03-sym-xy | X + Y symmetry | 8 | Independent symmetry groups |
@@ -71,7 +72,7 @@ results/
 **Constraint interaction gotcha**: when master and slave in same repeat group share an alignment constraint, the repeat group offset is forced (e.g., right-align with same width → dx=0). `Solver.forced_offsets` pre-computes these.
 
 ## Constraint Application Order (critical)
-Must be: symmetry on masters → alignment on non-slaves → repeat groups derive ALL slaves → symmetry on slaves. Wrong order causes constraint violations that look correct but fail validation.
+Must be iterative (5 passes): alignment (lowest priority) → repeat groups derive slaves → symmetry on ALL boxes (highest priority, enforces axis, overrides alignment drift) → repeat groups (slaves follow corrected masters) → final symmetry pass. Wrong order causes constraint violations that look correct but fail validation. Symmetry is the highest-priority hard constraint because axis position is part of the optimization state.
 
 ## Current Performance
 - Sample: Cost ~35k (reference)

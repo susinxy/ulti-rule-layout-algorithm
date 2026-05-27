@@ -120,37 +120,28 @@ class Solver:
         return {alpha[i]: (x[alpha[i]], y[alpha[i]]) for i in range(n)}
 
     def apply_constraints(self, pos, axis_x, axis_y, rg_offsets):
-        """Apply hard constraints with correct ordering to avoid conflicts."""
+        """Apply hard constraints with correct ordering to avoid conflicts.
+        
+        Priority order (highest to lowest):
+        1. Symmetry (must enforce axis, cannot be overridden)
+        2. Repeat groups (slaves follow masters)
+        3. Alignment (lowest priority, can be overridden by symmetry)
+        
+        Strategy:
+        - Apply alignment first (can be overridden)
+        - Apply repeat groups to derive slaves
+        - Apply symmetry to enforce axis (highest priority, overrides all)
+        - Re-apply repeat groups so slaves follow corrected masters
+        - Final symmetry pass to ensure no drift
+        """
 
         slave_boxes = set()
         for rg in self.repeat_groups:
             for slave in rg[1:]:
                 slave_boxes.update(slave)
 
-        for _iteration in range(10):
-            # PHASE 1: symmetry on masters / self-symmetric (non-slave) boxes
-            for a, b in self.sym_pairs_x:
-                if a in pos and b not in slave_boxes:
-                    xca = pos[a][0] + self.w[a] / 2.0
-                    yca = pos[a][1] + self.h[a] / 2.0
-                    xcb = 2.0 * axis_x - xca
-                    pos[b] = (xcb - self.w[b] / 2.0, yca - self.h[b] / 2.0)
-            for s in self.sym_self_x:
-                if s in pos and s not in slave_boxes:
-                    pos[s] = (axis_x - self.w[s] / 2.0, pos[s][1])
-
-            if axis_y is not None:
-                for a, b in self.sym_pairs_y:
-                    if a in pos and b not in slave_boxes:
-                        yca = pos[a][1] + self.h[a] / 2.0
-                        xca = pos[a][0] + self.w[a] / 2.0
-                        ycb = 2.0 * axis_y - yca
-                        pos[b] = (xca - self.w[b] / 2.0, ycb - self.h[b] / 2.0)
-                for s in self.sym_self_y:
-                    if s in pos and s not in slave_boxes:
-                        pos[s] = (pos[s][0], axis_y - self.h[s] / 2.0)
-
-            # PHASE 2: alignment on non-slave boxes only
+        # Helper: apply alignment constraints
+        def _apply_alignment():
             for grp in self.align_left:
                 non_slave = [i for i in grp if i in pos and i not in slave_boxes]
                 if non_slave:
@@ -180,7 +171,8 @@ class Solver:
                         if i in pos and i not in slave_boxes:
                             pos[i] = (pos[i][0], t)
 
-            # PHASE 3: repeat groups derive ALL slaves from masters
+        # Helper: apply repeat groups
+        def _apply_repeat_groups():
             for rg in self.repeat_groups:
                 master = rg[0]
                 for gi, slave in enumerate(rg[1:]):
@@ -208,13 +200,47 @@ class Solver:
                         if ma in pos:
                             pos[sl] = (pos[ma][0] + dx, pos[ma][1] + dy)
 
-            # PHASE 4: symmetry on slave boxes
+        # Helper: apply symmetry (highest priority)
+        def _apply_symmetry():
+            # X-axis symmetry
             for a, b in self.sym_pairs_x:
-                if a in pos and b in slave_boxes:
+                if a in pos:
                     xca = pos[a][0] + self.w[a] / 2.0
                     yca = pos[a][1] + self.h[a] / 2.0
                     xcb = 2.0 * axis_x - xca
                     pos[b] = (xcb - self.w[b] / 2.0, yca - self.h[b] / 2.0)
+            for s in self.sym_self_x:
+                if s in pos:
+                    pos[s] = (axis_x - self.w[s] / 2.0, pos[s][1])
+
+            # Y-axis symmetry
+            if axis_y is not None:
+                for a, b in self.sym_pairs_y:
+                    if a in pos:
+                        yca = pos[a][1] + self.h[a] / 2.0
+                        xca = pos[a][0] + self.w[a] / 2.0
+                        ycb = 2.0 * axis_y - yca
+                        pos[b] = (xca - self.w[b] / 2.0, ycb - self.h[b] / 2.0)
+                for s in self.sym_self_y:
+                    if s in pos:
+                        pos[s] = (pos[s][0], axis_y - self.h[s] / 2.0)
+
+        # Iterative application to converge
+        for _iteration in range(5):
+            # Phase 1: Alignment (lowest priority, can be overridden)
+            _apply_alignment()
+
+            # Phase 2: Repeat groups (first pass)
+            _apply_repeat_groups()
+
+            # Phase 3: Symmetry (highest priority, enforces axis)
+            _apply_symmetry()
+
+            # Phase 4: Repeat groups (second pass, slaves follow corrected masters)
+            _apply_repeat_groups()
+
+            # Phase 5: Final symmetry (ensure no drift from repeat group changes)
+            _apply_symmetry()
 
     def compute_cost(self, pos):
         hpwl = 0.0
@@ -293,6 +319,7 @@ class Solver:
                 beta = list(alpha)
                 random.shuffle(beta)
                 axis_x = all_w / 2.0 * 0.6
+                axis_y = None
                 rg_offsets = {}
                 for rg in self.repeat_groups:
                     master = rg[0]
