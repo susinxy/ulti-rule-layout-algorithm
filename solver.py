@@ -1,10 +1,7 @@
-import json, math, random, time, sys
+import math, random, time, sys
 from collections import defaultdict
 
 EPS = 1e-6
-
-def load(p):
-    with open(p) as f: return json.load(f)
 
 class Solver:
     def __init__(self, data):
@@ -33,6 +30,7 @@ class Solver:
 
         self.repeat_groups = [rg["groups"] for rg in data.get("repeat_groups", [])]
 
+        # dependent boxes: derived from symmetry / repeat-group (not optimized directly)
         self.dependent = set()
         for a, b in self.sym_pairs_x: self.dependent.add(b)
         for a, b in self.sym_pairs_y: self.dependent.add(b)
@@ -42,17 +40,16 @@ class Solver:
 
         self.indep = [b[0] for b in self.boxes if b[0] not in self.dependent]
 
-        # Net connectivity weight
+        # net connectivity weight (used for net-aware initial ordering)
         self.net_neighbors = defaultdict(lambda: defaultdict(int))
         for net in self.nets:
             for i in net:
                 for j in net:
                     if i != j: self.net_neighbors[i][j] += 1
 
-        # Map boxes to constraints
-        self.sym_pair_master = {}
-        for a, b in self.sym_pairs_x: self.sym_pair_master[b] = a
-        for a, b in self.sym_pairs_y: self.sym_pair_master[b] = a
+        # master-of maps (informational, not currently used to derive slaves)
+        self.sym_pair_master = {b: a for a, b in self.sym_pairs_x}
+        self.sym_pair_master.update({b: a for a, b in self.sym_pairs_y})
 
         self.rg_master_of = {}
         for rg in self.repeat_groups:
@@ -61,9 +58,10 @@ class Solver:
                 for a, b in zip(master, slave):
                     self.rg_master_of[b] = (master, slave)
 
-        # Analyze forced offsets from alignment constraints
-        # If master and slave in same group are aligned and have same size, offset is forced
-        self.forced_offsets = {}  # key -> (dx, dy) with None for free dimensions
+        # Forced offsets: if master and slave in same repeat group share an alignment
+        # constraint and have the same size, the offset is forced (e.g. dx=0 for
+        # right-align with equal widths).
+        self.forced_offsets = {}
         for rg in self.repeat_groups:
             master = rg[0]
             for gi, slave in enumerate(rg[1:]):
@@ -71,37 +69,24 @@ class Solver:
                 forced_dx = None
                 forced_dy = None
 
-                # Check right alignment
                 for grp in self.align_right:
                     for ma, sl in zip(master, slave):
-                        if ma in grp and sl in grp:
-                            # ma and sl must have same right edge
-                            # x_ma + w_ma = x_sl + w_sl = (x_ma + dx) + w_sl
-                            # If w_ma = w_sl, then dx = 0
-                            if abs(self.w[ma] - self.w[sl]) < EPS:
-                                forced_dx = 0.0
+                        if ma in grp and sl in grp and abs(self.w[ma] - self.w[sl]) < EPS:
+                            forced_dx = 0.0
 
-                # Check left alignment
                 for grp in self.align_left:
                     for ma, sl in zip(master, slave):
                         if ma in grp and sl in grp:
-                            # x_ma = x_sl = x_ma + dx => dx = 0
                             forced_dx = 0.0
 
-                # Check top alignment
                 for grp in self.align_top:
                     for ma, sl in zip(master, slave):
-                        if ma in grp and sl in grp:
-                            # y_ma + h_ma = y_sl + h_sl = (y_ma + dy) + h_sl
-                            # If h_ma = h_sl, then dy = 0
-                            if abs(self.h[ma] - self.h[sl]) < EPS:
-                                forced_dy = 0.0
+                        if ma in grp and sl in grp and abs(self.h[ma] - self.h[sl]) < EPS:
+                            forced_dy = 0.0
 
-                # Check bottom alignment
                 for grp in self.align_bottom:
                     for ma, sl in zip(master, slave):
                         if ma in grp and sl in grp:
-                            # y_ma = y_sl => dy = 0
                             forced_dy = 0.0
 
                 if forced_dx is not None or forced_dy is not None:
@@ -110,16 +95,9 @@ class Solver:
     def decode_seq_pair(self, alpha, beta):
         """Decode sequence pair (alpha, beta) to positions using longest path."""
         n = len(alpha)
-        alpha_pos = {x: i for i, x in enumerate(alpha)}
         beta_pos = {x: i for i, x in enumerate(beta)}
 
-        # X: i before j in alpha AND i before j in beta => x[j] >= x[i] + w[i]
-        # Y: i before j in alpha AND j before i in beta => y[j] >= y[i] + h[i]
-        x = {}
-        for item in alpha:
-            x[item] = 0.0
-
-        # Topological pass for X
+        x = {item: 0.0 for item in alpha}
         for i in range(n):
             ai = alpha[i]
             for j in range(i + 1, n):
@@ -129,10 +107,7 @@ class Solver:
                     if val > x[aj]:
                         x[aj] = val
 
-        y = {}
-        for item in alpha:
-            y[item] = 0.0
-
+        y = {item: 0.0 for item in alpha}
         for i in range(n):
             ai = alpha[i]
             for j in range(i + 1, n):
@@ -146,15 +121,14 @@ class Solver:
 
     def apply_constraints(self, pos, axis_x, axis_y, rg_offsets):
         """Apply hard constraints with correct ordering to avoid conflicts."""
-        
-        # Build set of all slave boxes (should not be modified by alignment)
+
         slave_boxes = set()
         for rg in self.repeat_groups:
             for slave in rg[1:]:
                 slave_boxes.update(slave)
-        
-        for iteration in range(10):
-            # PHASE 1: Symmetry on masters and self-symmetric boxes
+
+        for _iteration in range(10):
+            # PHASE 1: symmetry on masters / self-symmetric (non-slave) boxes
             for a, b in self.sym_pairs_x:
                 if a in pos and b not in slave_boxes:
                     xca = pos[a][0] + self.w[a] / 2.0
@@ -176,41 +150,37 @@ class Solver:
                     if s in pos and s not in slave_boxes:
                         pos[s] = (pos[s][0], axis_y - self.h[s] / 2.0)
 
-            # PHASE 2: Alignment on non-slave boxes only
+            # PHASE 2: alignment on non-slave boxes only
             for grp in self.align_left:
                 non_slave = [i for i in grp if i in pos and i not in slave_boxes]
                 if non_slave:
-                    vals = [pos[i][0] for i in non_slave]
-                    t = min(vals)
+                    t = min(pos[i][0] for i in non_slave)
                     for i in grp:
                         if i in pos and i not in slave_boxes:
                             pos[i] = (t, pos[i][1])
             for grp in self.align_right:
                 non_slave = [i for i in grp if i in pos and i not in slave_boxes]
                 if non_slave:
-                    vals = [pos[i][0] + self.w[i] for i in non_slave]
-                    t = max(vals)
+                    t = max(pos[i][0] + self.w[i] for i in non_slave)
                     for i in grp:
                         if i in pos and i not in slave_boxes:
                             pos[i] = (t - self.w[i], pos[i][1])
             for grp in self.align_top:
                 non_slave = [i for i in grp if i in pos and i not in slave_boxes]
                 if non_slave:
-                    vals = [pos[i][1] + self.h[i] for i in non_slave]
-                    t = max(vals)
+                    t = max(pos[i][1] + self.h[i] for i in non_slave)
                     for i in grp:
                         if i in pos and i not in slave_boxes:
                             pos[i] = (pos[i][0], t - self.h[i])
             for grp in self.align_bottom:
                 non_slave = [i for i in grp if i in pos and i not in slave_boxes]
                 if non_slave:
-                    vals = [pos[i][1] for i in non_slave]
-                    t = min(vals)
+                    t = min(pos[i][1] for i in non_slave)
                     for i in grp:
                         if i in pos and i not in slave_boxes:
                             pos[i] = (pos[i][0], t)
 
-            # PHASE 3: Repeat groups (derive ALL slaves from masters)
+            # PHASE 3: repeat groups derive ALL slaves from masters
             for rg in self.repeat_groups:
                 master = rg[0]
                 for gi, slave in enumerate(rg[1:]):
@@ -229,7 +199,6 @@ class Solver:
                             dy = forced[1] if forced[1] is not None else 50.0
                             rg_offsets[key] = (dx, dy)
 
-                    # Apply forced offsets
                     dx, dy = rg_offsets[key]
                     if forced[0] is not None: dx = forced[0]
                     if forced[1] is not None: dy = forced[1]
@@ -239,7 +208,7 @@ class Solver:
                         if ma in pos:
                             pos[sl] = (pos[ma][0] + dx, pos[ma][1] + dy)
 
-            # PHASE 4: Apply symmetry to slave boxes that also have symmetry constraints
+            # PHASE 4: symmetry on slave boxes
             for a, b in self.sym_pairs_x:
                 if a in pos and b in slave_boxes:
                     xca = pos[a][0] + self.w[a] / 2.0
@@ -274,7 +243,7 @@ class Solver:
         return total
 
     def net_aware_order(self):
-        """BFS order by net connectivity for good initial alpha"""
+        """BFS order by net connectivity for good initial alpha."""
         neighbors = self.net_neighbors
         start = max(self.indep, key=lambda x: sum(neighbors[x].values()))
         visited = set()
@@ -294,12 +263,12 @@ class Solver:
         return order
 
     def solve(self, time_limit=120):
+        """Run adaptive-restart SA. Returns (positions_dict, best_cost)."""
         start = time.time()
         ids = list(range(1, self.n + 1))
         n_ids = len(ids)
         all_w = sum(self.w[b] for b in ids)
 
-        # Global best across all runs
         global_best_pos = None
         global_best_cost = float('inf')
         global_best_alpha = None
@@ -307,7 +276,6 @@ class Solver:
         global_best_axis_x = None
         global_best_rg_offsets = None
 
-        # Adaptive restart: trigger if no improvement in stale_seconds
         stale_seconds = 15.0
         last_improve_time = start
         run_count = 0
@@ -316,7 +284,6 @@ class Solver:
             run_count += 1
             is_first_run = run_count == 1
 
-            # Initialization
             if is_first_run:
                 indep_order = self.net_aware_order()
                 alpha = list(indep_order) + [b for b in ids if b not in indep_order]
@@ -336,13 +303,11 @@ class Solver:
                 T_start = 2000.0
                 cooling = 0.99997
             else:
-                # Warm restart: perturb global best, lower T
                 alpha = list(global_best_alpha)
                 beta = list(global_best_beta)
                 axis_x = global_best_axis_x
                 rg_offsets = dict(global_best_rg_offsets)
 
-                # Perturb: swap random fraction of positions
                 perturb_frac = random.uniform(0.05, 0.15)
                 n_swap = max(1, int(len(ids) * perturb_frac))
                 for _ in range(n_swap):
@@ -385,7 +350,6 @@ class Solver:
                 new_rg_offsets = dict(rg_offsets)
 
                 r = random.random()
-
                 if r < 0.25:
                     i, j = random.sample(range(n_ids), 2)
                     new_alpha[i], new_alpha[j] = new_alpha[j], new_alpha[i]
@@ -451,13 +415,10 @@ class Solver:
                 moves += 1
                 T = max(T * cooling, 0.1)
 
-                # Adaptive: break first run if stale and time permits restart
                 if is_first_run and moves % 5000 == 0:
-                    stale = time.time() - chunk_last_improve > stale_seconds
-                    if stale and time_limit - (time.time() - start) > 25:
+                    if time.time() - chunk_last_improve > stale_seconds and time_limit - (time.time() - start) > 25:
                         break
 
-            # Update global best
             if local_best_cost < global_best_cost:
                 global_best_cost = local_best_cost
                 global_best_pos = dict(local_best_pos)
@@ -470,115 +431,7 @@ class Solver:
             elapsed = time.time() - start
             print(f"Run {run_count}: local={local_best_cost:.0f} global={global_best_cost:.0f} {moves}it {elapsed:.0f}s", file=sys.stderr)
 
-            remaining = time_limit - elapsed
-            if remaining < 5:
+            if time_limit - elapsed < 5:
                 break
 
         return global_best_pos, global_best_cost
-
-
-def plot_input(solver, filename="input_boxes.png"):
-    """Visualize input box sizes in grid layout"""
-    try:
-        import matplotlib.pyplot as plt
-        import matplotlib.patches as patches
-    except ImportError:
-        print("matplotlib not available, skipping plot", file=sys.stderr)
-        return
-
-    fig, ax = plt.subplots(1, 1, figsize=(12, 8))
-    
-    cols = int((solver.n ** 0.5) * 1.5)
-    max_w = max(solver.w.values())
-    max_h = max(solver.h.values())
-    cell_w = max_w * 1.3
-    cell_h = max_h * 1.3
-
-    colors = plt.cm.Set3([(i * 0.1) % 1 for i in range(solver.n)])
-
-    for i, bid in enumerate(range(1, solver.n + 1)):
-        row = i // cols
-        col = i % cols
-        x = col * cell_w
-        y = row * cell_h
-        w = solver.w[bid]
-        h = solver.h[bid]
-
-        rect = patches.Rectangle((x, y), w, h, linewidth=1, edgecolor='black',
-                                  facecolor=colors[i % len(colors)], alpha=0.6)
-        ax.add_patch(rect)
-        ax.text(x + w / 2, y + h / 2, str(bid), ha='center', va='center',
-                fontsize=8, weight='bold')
-
-    ax.set_title(f"Input Boxes (n={solver.n})")
-    ax.set_aspect('equal')
-    ax.autoscale()
-    ax.margins(0.05)
-    plt.tight_layout()
-    plt.savefig(filename, dpi=150)
-    plt.close()
-    print(f"Input plot saved: {filename}", file=sys.stderr)
-
-
-def plot_output(solver, pos, filename="output_layout.png"):
-    """Visualize output layout with symmetry axes and nets"""
-    try:
-        import matplotlib.pyplot as plt
-        import matplotlib.patches as patches
-    except ImportError:
-        print("matplotlib not available, skipping plot", file=sys.stderr)
-        return
-
-    fig, ax = plt.subplots(1, 1, figsize=(14, 10))
-
-    colors = plt.cm.Set3([(i * 0.07) % 1 for i in range(solver.n)])
-
-    for i, bid in enumerate(range(1, solver.n + 1)):
-        if bid not in pos:
-            continue
-        x, y = pos[bid]
-        w = solver.w[bid]
-        h = solver.h[bid]
-
-        rect = patches.Rectangle((x, y), w, h, linewidth=2, edgecolor='black',
-                                  facecolor=colors[i % len(colors)])
-        ax.add_patch(rect)
-        ax.text(x + w / 2, y + h / 2, str(bid), ha='center', va='center',
-                fontsize=7, weight='bold', bbox=dict(boxstyle='round,pad=0.2', 
-                                                      facecolor='white', edgecolor='none', alpha=0.8))
-
-    # Draw symmetry axes
-    if solver.sym_pairs_x or solver.sym_self_x:
-        xs = [pos[bid][0] + solver.w[bid] / 2 for bid in pos]
-        axis_x = sum(xs) / len(xs)
-        ymin = min(pos[bid][1] for bid in pos) - 5
-        ymax = max(pos[bid][1] + solver.h[bid] for bid in pos) + 5
-        ax.axvline(axis_x, color='red', linestyle='--', linewidth=1.5, alpha=0.5, label='X-axis sym')
-
-    if solver.sym_pairs_y or solver.sym_self_y:
-        ys = [pos[bid][1] + solver.h[bid] / 2 for bid in pos]
-        axis_y = sum(ys) / len(ys)
-        xmin = min(pos[bid][0] for bid in pos) - 5
-        xmax = max(pos[bid][0] + solver.w[bid] for bid in pos) + 5
-        ax.axhline(axis_y, color='green', linestyle='--', linewidth=1.5, alpha=0.5, label='Y-axis sym')
-
-    # Draw nets as faint connections
-    net_colors = plt.cm.tab20([i * 0.05 % 1 for i in range(len(solver.nets))])
-    for ni, net in enumerate(solver.nets):
-        centers = [(pos[bid][0] + solver.w[bid] / 2, pos[bid][1] + solver.h[bid] / 2)
-                   for bid in net if bid in pos]
-        if len(centers) >= 2:
-            cx = [c[0] for c in centers]
-            cy = [c[1] for c in centers]
-            ax.plot(cx, cy, '-', color=net_colors[ni], alpha=0.3, linewidth=1)
-
-    ax.set_title(f"Output Layout (Cost: {solver.compute_cost(pos)[0]:.0f})")
-    ax.set_aspect('equal')
-    ax.autoscale()
-    ax.margins(0.05)
-    if solver.sym_pairs_x or solver.sym_pairs_y:
-        ax.legend(loc='upper right', fontsize=8)
-    plt.tight_layout()
-    plt.savefig(filename, dpi=150)
-    plt.close()
-    print(f"Output plot saved: {filename}", file=sys.stderr)
