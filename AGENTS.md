@@ -19,6 +19,12 @@ python3 validate.py sample_input.json output.json
 - SA moves: swap, reverse-segment, move-element, axis-adjust, rg-offset-adjust
 - Constraint repair after every decode
 
+**Branch strategy** (`adaptive-restart`): Warm restart SA with adaptive stale detection.
+- First run uses full budget; if no improvement for 15s and ≥25s remain, triggers warm restart
+- Warm restart perturbs 5-15% of sequence pair positions, uses lower T0 (300-600)
+- Pro: escapes local optima, reduces variance across runs
+- Con: restart overhead if stale detection is poorly tuned
+
 **Key design**: only independently optimize "independent" boxes (not slaves). Dependent boxes derived from:
 - Symmetry pairs: slave = mirror(master) around axis
 - Repeat groups: slave = master + offset  
